@@ -46,22 +46,37 @@ def seed_everything(seed: int):
 # ----------------------------
 # Data / Formatting
 # ----------------------------
-INSTRUCTION_TEMPLATE = (
-    "You are a math tutor. Solve the problem step by step.\n\n"
-    "Question:\n{question}\n\nAnswer:\n{answer}\n"
-)
 
 def format_example(ex):
-    # GSM8K 'main' split has fields 'question' and 'answer' (CoT + final).
-    # For simplicity, train to reproduce full "Answer" (including reasoning).
-    return INSTRUCTION_TEMPLATE.format(question=ex["question"], answer=ex["answer"])
+    prefix = tokenizer.apply_chat_template(
+        [{"role": "user", "content": ex["question"]},
+        {"role": "assistant", "content": ex["answer"]},
+        {"role": "user", "content": "Provide a detailed, step-by-step reasoning process for the above answer, don't repeat yourself."},
+        ],
+        tokenize=False,
+        add_generation_prompt=True,  # adds the assistant header/start token(s)
+    )
+
+    # How many tokens belong to the prompt/prefix (to be ignored in loss)?
+    prompt_len = len(
+        tokenizer(prefix, add_special_tokens=False).input_ids
+    )
+
+
+    return {"text": full_text,
+            "prompt_len": prompt_len,
+            "question":ex["question"],
+            "answer":ex["answer"], 
+            }
 
 @dataclass
 class Collator:
     tokenizer: AutoTokenizer
     max_len: int
+
     def __call__(self, batch: List[Dict]):
         texts = [b["text"] for b in batch]
+        prompt_lens = [b["prompt_len"] for b in batch]
         toks = self.tokenizer(
             texts,
             max_length=self.max_len,
@@ -70,9 +85,54 @@ class Collator:
             return_tensors="pt",
             add_special_tokens=True,
         )
-        # Simple SFT: predict every token
-        toks["labels"] = toks["input_ids"].clone()
+        toks["question"] = b["question"]
+        toks["answer"] = b["answer"]
+
         return toks
+
+def tokenize_batch(tokenizer, batch):
+    prefix = [tokenizer.apply_chat_template(
+        [{"role": "user", "content": q}],
+        tokenize=False,
+        add_generation_prompt=True,  # adds the assistant header/start token(s)
+    ) for q in batch["question"]]
+
+    # How many tokens belong to the prompt/prefix (to be ignored in loss)?
+    prompt_len = [len(
+        tokenizer(p, add_special_tokens=False).input_ids
+    ) for p in prefix]
+
+    texts = [p + a for p, a in zip(prefix, batch["answer"])]
+
+    toks = tokenizer(
+        texts,
+        max_length=self.max_len,
+        truncation=True,
+        padding=True,
+        return_tensors="pt",
+        add_special_tokens=True,
+    )
+
+    input_ids = toks["input_ids"]
+    labels = input_ids.clone()
+
+    # Mask padding tokens (optional but recommended)
+    if "attention_mask" in toks:
+        labels[toks["attention_mask"] == 0] = -100
+    else:
+        # Fallback: mask pad_token_id if attention_mask isn't returned
+        pad_id = tokenizer.pad_token_id
+        if pad_id is not None:
+            labels[input_ids == pad_id] = -100
+
+    # Mask the prompt part per-sample so only assistant tokens are trained
+    seq_len = input_ids.size(1)
+    for i, p_len in enumerate(prompt_lens):
+        start = min(p_len, seq_len)  # handle truncation of long prompts
+        labels[i, :start] = -100
+
+    toks["labels"] = labels
+    return toks # return tokens
 
 # ----------------------------
 # Training
@@ -85,7 +145,7 @@ def train(args):
     if is_main_process():
         wandb.init(project=os.getenv("WANDB_PROJECT", "ddp-sft"), config=vars(args))
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_id, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_id, use_fast=True, padding_side="left")
     if tokenizer.pad_token is None:
         # Safety: set pad_token if missing
         tokenizer.pad_token = tokenizer.eos_token
@@ -96,7 +156,14 @@ def train(args):
         device_map=None,
     ).to(device)
 
+    z_model = AutoModelForCausalLM.from_pretrained(
+        args.latent_model_id,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+        device_map=None,
+    ).to(device)
+
     model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+    z_model = DDP(z_model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     # Load GSM8K (train only). Use a tiny streaming or full load depending on memory.
     ds = load_dataset("gsm8k", "main", split="train")  # 7473 examples
@@ -124,12 +191,21 @@ def train(args):
     ]
     optimizer = torch.optim.AdamW(grouped, lr=args.lr, betas=(0.9, 0.95), eps=1e-8)
 
+    grouped = [
+        {"params": [p for n, p in z_model.named_parameters() if p.requires_grad and not any(nd in n for nd in no_decay)],
+         "weight_decay": args.weight_decay},
+        {"params": [p for n, p in z_model.named_parameters() if p.requires_grad and any(nd in n for nd in no_decay)],
+         "weight_decay": 0.0},
+    ]
+    z_optimizer = torch.optim.AdamW(grouped, lr=args.lr, betas=(0.9, 0.95), eps=1e-8)
+
     total_steps = (len(dl) * args.epochs) // max(1, args.grad_accum)
     warmup_steps = int(total_steps * args.warmup_ratio)
     scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+    z_scheduler = get_linear_schedule_with_warmup(z_optimizer, warmup_steps, total_steps)
 
     scaler = torch.cuda.amp.GradScaler(enabled=not torch.cuda.is_bf16_supported())
-
+    z_scaler = torch.cuda.amp.GradScaler(enabled=not torch.cuda.is_bf16_supported())
     # ----------------------------
     # Loop
     # ----------------------------
@@ -140,21 +216,55 @@ def train(args):
         running_loss = 0.0
 
         for step, batch in enumerate(dl):
-            for k in batch:
-                batch[k] = batch[k].to(device, non_blocking=True)
+            input_ids = batch.input_ids.to(device)
+            attention_mask = batch.attention_mask.to(device)
+            with torch.no_grad():
+                gen = z_model.module.generate(
+                    input_ids = input_ids,
+                    attention_mask = attention_mask,
+                    max_new_tokens=args.max_gen_len,
+                    do_sample=True,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    eos_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
 
+            thoughts = tokenizer.decode(gen[:, input_ids.shape[1]:])
+            # attaching the generated thoughts to the original answers
+            batch["answer"] = [thoughts + "\n\n" + a for a in zip(thoughts, batch["answer"])]
+            
+            
+            new_batch = tokenize_batch(batch)
+
+            # next token prediction to optimize the current policy for longer generation (E step)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
-                outputs = model(**batch)
+                outputs = model(**new_batch)
                 loss = outputs.loss / args.grad_accum
+                p_logprob = outputs.logits.softmax(-1)[new_batch.labels].log().detach()
 
             scaler.scale(loss).backward()
 
+
+            # compute log
+            z_output = z_model(gen)
+            q_prob = z_output.logits.softmax(-1)[gen]
+            q_logprob = q_prob.log()
+            z_loss = (q_prob * (p_logprob - q_logprob)).sum()
+            z_scaler.scale(z_loss).backward()
+            
             if (step + 1) % args.grad_accum == 0:
                 scaler.unscale_
                 scaler.step(optimizer)
                 scaler.update()
+                z_scaler.unscale_
+                z_scaler.step(z_optimizer)
+                z_scaler.update()
+
                 optimizer.zero_grad(set_to_none=True)
+                z_optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
+                z_scheduler.step()
                 global_step += 1
 
                 # Logging (main process only)
@@ -163,8 +273,12 @@ def train(args):
                     loss_detached = outputs.loss.detach().float()
                     dist.all_reduce(loss_detached, op=dist.ReduceOp.SUM)
                     loss_avg = (loss_detached / dist.get_world_size()).item()
+                    z_loss_detached = z_output.loss.detach().float()
+                    dist.all_reduce(z_loss_detached, op=dist.ReduceOp.SUM)
+                    z_loss_avg = (z_loss_detached / dist.get_world_size()).item()
                     lr = scheduler.get_last_lr()[0]
-                    wandb.log({"train/loss": loss_avg, "train/lr": lr, "step": global_step})
+                    wandb.log({"train/loss": loss_avg, "train/lr": lr, "step": global_step, "train/z_loss": z_loss_avg})
+                    
 
             running_loss += outputs.loss.detach().float().item()
 
@@ -188,8 +302,10 @@ def train(args):
 # ----------------------------
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_id", type=str, default="Qwen/Qwen2.5-0.5B-Instruct",
-                   help="Replace with your Qwen3-0.6B base if desired.")
+    p.add_argument("--model_id", type=str, default="Qwen/Qwen3-0.6B",
+                   help="Replace with your favorite huggingface model")
+    p.add_argument("--latent_model_id", type=str, default="Qwen/Qwen3-0.6B",
+                   help="Replace with your favorite huggingface model")
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--max_len", type=int, default=1024)

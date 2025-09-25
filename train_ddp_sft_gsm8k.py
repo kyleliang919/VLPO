@@ -46,22 +46,31 @@ def seed_everything(seed: int):
 # ----------------------------
 # Data / Formatting
 # ----------------------------
-INSTRUCTION_TEMPLATE = (
-    "You are a math tutor. Solve the problem step by step.\n\n"
-    "Question:\n{question}\n\nAnswer:\n{answer}\n"
-)
+def format_example(ex, tokenizer):
+    # Build only the user side and the assistant role prefix
+    prefix = tokenizer.apply_chat_template(
+        [{"role": "user", "content": ex["question"]}],
+        tokenize=False,
+        add_generation_prompt=True,  # adds the assistant header/start token(s)
+    )
+    full_text = prefix + ex["answer"]
 
-def format_example(ex):
-    # GSM8K 'main' split has fields 'question' and 'answer' (CoT + final).
-    # For simplicity, train to reproduce full "Answer" (including reasoning).
-    return INSTRUCTION_TEMPLATE.format(question=ex["question"], answer=ex["answer"])
+    # How many tokens belong to the prompt/prefix (to be ignored in loss)?
+    prompt_len = len(
+        tokenizer(prefix, add_special_tokens=False).input_ids
+    )
+
+    return {"text": full_text, "prompt_len": prompt_len}
 
 @dataclass
 class Collator:
     tokenizer: AutoTokenizer
     max_len: int
+
     def __call__(self, batch: List[Dict]):
         texts = [b["text"] for b in batch]
+        prompt_lens = [b["prompt_len"] for b in batch]
+
         toks = self.tokenizer(
             texts,
             max_length=self.max_len,
@@ -70,8 +79,26 @@ class Collator:
             return_tensors="pt",
             add_special_tokens=True,
         )
-        # Simple SFT: predict every token
-        toks["labels"] = toks["input_ids"].clone()
+
+        input_ids = toks["input_ids"]
+        labels = input_ids.clone()
+
+        # Mask padding tokens (optional but recommended)
+        if "attention_mask" in toks:
+            labels[toks["attention_mask"] == 0] = -100
+        else:
+            # Fallback: mask pad_token_id if attention_mask isn't returned
+            pad_id = self.tokenizer.pad_token_id
+            if pad_id is not None:
+                labels[input_ids == pad_id] = -100
+
+        # Mask the prompt part per-sample so only assistant tokens are trained
+        seq_len = input_ids.size(1)
+        for i, p_len in enumerate(prompt_lens):
+            start = min(p_len, seq_len)  # handle truncation of long prompts
+            labels[i, :start] = -100
+
+        toks["labels"] = labels
         return toks
 
 # ----------------------------
@@ -140,9 +167,6 @@ def train(args):
         running_loss = 0.0
 
         for step, batch in enumerate(dl):
-            for k in batch:
-                batch[k] = batch[k].to(device, non_blocking=True)
-
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
                 outputs = model(**batch)
                 loss = outputs.loss / args.grad_accum
@@ -188,8 +212,8 @@ def train(args):
 # ----------------------------
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_id", type=str, default="Qwen/Qwen2.5-0.5B-Instruct",
-                   help="Replace with your Qwen3-0.6B base if desired.")
+    p.add_argument("--model_id", type=str, default="Qwen/Qwen3-0.6B",
+                   help="huggingface model id")
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--max_len", type=int, default=1024)

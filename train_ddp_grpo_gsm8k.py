@@ -42,13 +42,14 @@ def seed_all(seed: int):
 # ----------------------------
 # Data / prompts / reward
 # ----------------------------
-SYS_PROMPT = (
-    "You are a helpful math tutor. Solve the problem step by step and give the final result.\n\n"
-)
 
 def make_prompt(q: str) -> str:
-    # Keep prompts short & consistent
-    return SYS_PROMPT + f"Question:\n{q}\n\nAnswer:\n"
+    prefix = tokenizer.apply_chat_template(
+        [{"role": "user", "content": ex["question"]}],
+        tokenize=False,
+        add_generation_prompt=True,  # adds the assistant header/start token(s)
+    )
+    return prefix
 
 ANS_RE = re.compile(r"####\s*(-?\d+(?:\.\d+)?)")
 
@@ -319,8 +320,8 @@ def train(args):
 # ----------------------------
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_id", type=str, default="Qwen/Qwen2.5-0.5B-Instruct")
-    p.add_argument("--ref_id",   type=str, default="Qwen/Qwen2.5-0.5B-Instruct",
+    p.add_argument("--model_id", type=str, default="Qwen/Qwen3-0.6B")
+    p.add_argument("--ref_id",   type=str, default="Qwen/Qwen3-0.6B",
                    help="Frozen reference; often the initial policy checkpoint.")
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--batch_size", type=int, default=16, help="number of prompts per step")

@@ -22,7 +22,7 @@ torchrun --nproc_per_node=4 train_ddp_grpo_gsm8k.py \
 
 ## VLPO
 ```python
-export WANDB_PROJECT=gsm8k-grpo-ddp
+export WANDB_PROJECT=gsm8k-vlpo-ddp
 torchrun --nproc_per_node=4 train_ddp_grpo_gsm8k.py \
   --model_id Qwen/Qwen2.5-0.5B-Instruct \
   --ref_id   Qwen/Qwen2.5-0.5B-Instruct \
