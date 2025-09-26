@@ -128,7 +128,7 @@ def tokenize_batch(batch, thoughts, tokenizer, device):
     # Mask the prompt part per-sample so only assistant tokens are trained
     seq_len = input_ids.size(1)
     thought_starts = []
-    for i, p_len, pad_start in enumerate(zip(prompt_lens, pad_start_idx)):
+    for i, (p_len, pad_start) in enumerate(zip(prompt_lens, pad_start_idx)):
         start = min(pad_start + p_len, seq_len) # handle truncation of long prompts
         labels[i, :start] = -100
         thought_starts.append(start)
