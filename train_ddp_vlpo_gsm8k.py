@@ -89,7 +89,7 @@ class Collator:
         toks["answer"] = [b["answer"] for b in batch]
         return toks
 
-def tokenize_batch(batch, tokenizer):
+def tokenize_batch(batch, tokenizer, device):
     prefix = [tokenizer.apply_chat_template(
         [{"role": "user", "content": q}],
         tokenize=False,
@@ -130,7 +130,8 @@ def tokenize_batch(batch, tokenizer):
         start = min(p_len, seq_len)  # handle truncation of long prompts
         labels[i, :start] = -100
 
-    toks["labels"] = labels
+    toks["input_ids"] = toks["input_ids"].to(device)
+    toks["labels"] = labels.to(device)
     return toks # return tokens
 
 # ----------------------------
@@ -234,8 +235,7 @@ def train(args):
             batch["answer"] = [t + "\n\n" + a for t, a in zip(thoughts, batch["answer"])]
             
             
-            new_batch = tokenize_batch(batch, tokenizer)
-
+            new_batch = tokenize_batch(batch, tokenizer, device)
             # next token prediction to optimize the current policy for longer generation (E step)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
                 outputs = model(**new_batch)
