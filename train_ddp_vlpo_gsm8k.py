@@ -97,7 +97,7 @@ def tokenize_batch(batch, tokenizer):
     ) for q in batch["question"]]
 
     # How many tokens belong to the prompt/prefix (to be ignored in loss)?
-    prompt_len = [len(
+    prompt_lens = [len(
         tokenizer(p, add_special_tokens=False).input_ids
     ) for p in prefix]
 
