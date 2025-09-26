@@ -229,9 +229,9 @@ def train(args):
                     pad_token_id=tokenizer.pad_token_id,
                 )
 
-            thoughts = tokenizer.decode(gen[:, input_ids.shape[1]:])
+            thoughts = tokenizer.batch_decode(gen[:, input_ids.shape[1]:])
             # attaching the generated thoughts to the original answers
-            batch["answer"] = [thoughts + "\n\n" + a for a in zip(thoughts, batch["answer"])]
+            batch["answer"] = [t + "\n\n" + a for t, a in zip(thoughts, batch["answer"])]
             
             
             new_batch = tokenize_batch(batch, tokenizer)
