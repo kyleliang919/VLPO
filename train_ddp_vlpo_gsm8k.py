@@ -240,14 +240,14 @@ def train(args):
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
                 outputs = model(**new_batch)
                 loss = outputs.loss / args.grad_accum
-                p_logprob = outputs.logits.softmax(-1)[new_batch.labels].log().detach()
+                p_logprob = torch.gather(outputs.logits.softmax(-1), dim = -1, index = new_batch.labels.unsqueeze(-1)).log().detach()
 
             scaler.scale(loss).backward()
 
 
             # compute log
             z_output = z_model(gen)
-            q_prob = z_output.logits.softmax(-1)[gen]
+            q_prob = torch.gather(z_output.logits.softmax(-1), dim =-1, index = gen.unsqueeze(-1))
             q_logprob = q_prob.log()
             z_loss = (q_prob * (p_logprob - q_logprob)).sum()
             z_scaler.scale(z_loss).backward()
