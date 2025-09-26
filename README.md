@@ -25,7 +25,6 @@ torchrun --nproc_per_node=4 train_ddp_grpo_gsm8k.py \
 export WANDB_PROJECT=gsm8k-vlpo
 torchrun --nproc_per_node=4 train_ddp_grpo_gsm8k.py \
   --model_id Qwen/Qwen3-0.6B \
-  --ref_id   Qwen/Qwen3-0.6B \
-  --epochs 1 --batch_size 16 --group_size 4 --lr 1e-6 \
-  --max_prompt_len 512 --max_gen_len 128 --beta_kl 0.02
+  --latent_model_id   Qwen/Qwen3-0.6B \
+  --epochs 1 --batch_size 4 --lr 2e-5  --max_len 1024
 ```
