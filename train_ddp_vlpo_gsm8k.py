@@ -257,7 +257,7 @@ def train(args):
                 
             q_prob = torch.gather(z_output.logits.softmax(-1)[:,thought_start:], dim =-1, index = gen[:,thought_start:].unsqueeze(-1))
             q_logprob = q_prob.log()
-            z_loss = (q_prob * (p_logprob - q_logprob) * z_attention_mask[:,thought_start:]).sum()
+            z_loss = (q_prob * (q_logprob - p_logprob) * z_attention_mask[:,thought_start:]).sum() # maximize policy gradient is equal to minize this one
             z_scaler.scale(z_loss).backward()
             
             if (step + 1) % args.grad_accum == 0:
