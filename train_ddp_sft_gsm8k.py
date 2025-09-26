@@ -128,7 +128,7 @@ def train(args):
     # Load GSM8K (train only). Use a tiny streaming or full load depending on memory.
     ds = load_dataset("gsm8k", "main", split="train")  # 7473 examples
     ds = ds.shuffle(seed=args.seed)
-    ds = ds.map(lambda ex: {"text": format_example(ex)}, remove_columns=ds.column_names)
+    ds = ds.map(lambda ex: {"text": format_example(ex, tokenizer)}, remove_columns=ds.column_names)
 
     sampler = DistributedSampler(ds, shuffle=True, drop_last=True)
     collate = Collator(tokenizer, args.max_len)
