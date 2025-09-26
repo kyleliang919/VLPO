@@ -250,8 +250,8 @@ def train(args):
             # compute log
             z_output = z_model(gen, attention_mask = z_attention_mask)
             with torch.no_grad():
-                thought_logits_idx = torch.arange(thought_toks_len).unsqueeze(0) + thought_starts
-                thought_logits = torch.gather(outputs.logits.detach(), dim = 1, index = thought_logits_idx)
+                thought_logits_idx = torch.arange(thought_toks_len, device = device).unsqueeze(0) + thought_starts.to(device)
+                thought_logits = torch.gather(outputs.logits.detach(), dim = 1, index = thought_logits_idx.unsqueeze(-1).expand(-1, -1, outputs.logits.shape[-1]))
                 p_logprob = torch.gather(thought_logits.softmax(-1), dim = -1, index = thought_toks.unsqueeze(-1)).log()
                 
             q_prob = torch.gather(z_output.logits.softmax(-1)[:,thought_start:], dim =-1, index = gen[:,thought_start:].unsqueeze(-1))
