@@ -105,7 +105,7 @@ def tokenize_batch(batch, tokenizer):
 
     toks = tokenizer(
         texts,
-        max_length=self.max_len,
+        max_length=args.max_len,
         truncation=True,
         padding=True,
         return_tensors="pt",
