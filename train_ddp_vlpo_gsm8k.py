@@ -89,7 +89,7 @@ class Collator:
         toks["answer"] = [b["answer"] for b in batch]
         return toks
 
-def tokenize_batch(batch, tokenizer, device):
+def tokenize_batch(batch, thoughts, tokenizer, device):
     prefix = [tokenizer.apply_chat_template(
         [{"role": "user", "content": q}],
         tokenize=False,
@@ -101,7 +101,7 @@ def tokenize_batch(batch, tokenizer, device):
         tokenizer(p, add_special_tokens=False).input_ids
     ) for p in prefix]
 
-    texts = [p + a for p, a in zip(prefix, batch["answer"])]
+    texts = [p + a for p, a in zip(prefix, [t + "\n\n" + a for t, a in zip(thoughts, batch["answer"])])]
 
     toks = tokenizer(
         texts,
@@ -124,15 +124,18 @@ def tokenize_batch(batch, tokenizer, device):
         if pad_id is not None:
             labels[input_ids == pad_id] = -100
 
+    pad_start_idx = (labels == -100).sum(-1)
     # Mask the prompt part per-sample so only assistant tokens are trained
     seq_len = input_ids.size(1)
-    for i, p_len in enumerate(prompt_lens):
-        start = min(p_len, seq_len)  # handle truncation of long prompts
+    thought_starts = []
+    for i, p_len, pad_start in enumerate(zip(prompt_lens, pad_start_idx)):
+        start = min(pad_start + p_len, seq_len) # handle truncation of long prompts
         labels[i, :start] = -100
+        thought_starts.append(start)
 
     toks["input_ids"] = toks["input_ids"].to(device)
     toks["labels"] = labels.to(device)
-    return toks # return tokens
+    return toks, thought_starts # return tokens
 
 # ----------------------------
 # Training
@@ -229,27 +232,31 @@ def train(args):
                     eos_token_id=tokenizer.eos_token_id,
                     pad_token_id=tokenizer.pad_token_id,
                 )
-
-            thoughts = tokenizer.batch_decode(gen[:, input_ids.shape[1]:])
-            # attaching the generated thoughts to the original answers
-            batch["answer"] = [t + "\n\n" + a for t, a in zip(thoughts, batch["answer"])]
-            
-            
-            new_batch = tokenize_batch(batch, tokenizer, device)
+                z_attention_mask = gen!=tokenizer.pad_token_id
+                thought_start = input_ids.shape[1]
+                thought_toks = gen[:, thought_start:]
+                thought_toks_len = thought_toks.shape[-1]
+            thoughts = tokenizer.batch_decode(thought_toks)
+            # attaching the generated thoughts to the original answers        
+            new_batch, thought_starts = tokenize_batch(batch, thoughts, tokenizer, device)
             # next token prediction to optimize the current policy for longer generation (E step)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
                 outputs = model(**new_batch)
                 loss = outputs.loss / args.grad_accum
-                p_logprob = torch.gather(outputs.logits.softmax(-1), dim = -1, index = new_batch.labels.unsqueeze(-1)).log().detach()
 
             scaler.scale(loss).backward()
 
 
             # compute log
-            z_output = z_model(gen)
-            q_prob = torch.gather(z_output.logits.softmax(-1), dim =-1, index = gen.unsqueeze(-1))
+            z_output = z_model(gen, attention_mask = z_attention_mask)
+            with torch.no_grad:
+                thought_end = thought_start + thought_toks_len
+                thought_logits = outputs.logits[:, thought_start:thought_end]
+                p_logprob = torch.gather(thought_logits.softmax(-1), dim = -1, index = thought_toks.unsqueeze(-1)).log()
+                
+            q_prob = torch.gather(z_output.logits.softmax(-1)[:,thought_start:], dim =-1, index = gen[:,thought_start:].unsqueeze(-1))
             q_logprob = q_prob.log()
-            z_loss = (q_prob * (p_logprob - q_logprob)).sum()
+            z_loss = (q_prob * (p_logprob - q_logprob) * z_attention_mask[:,thought_start:]).sum()
             z_scaler.scale(z_loss).backward()
             
             if (step + 1) % args.grad_accum == 0:
