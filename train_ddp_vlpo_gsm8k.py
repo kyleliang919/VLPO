@@ -63,7 +63,7 @@ def format_example(ex, tokenizer):
     )
 
 
-    return {"text": full_text,
+    return {"text": prefix,
             "prompt_len": prompt_len,
             "question":ex["question"],
             "answer":ex["answer"], 
