@@ -237,6 +237,7 @@ def train(args):
                 thought_toks = gen[:, thought_start:]
                 thought_toks_len = thought_toks.shape[-1]
             thoughts = tokenizer.batch_decode(thought_toks)
+            print(thoughts)
             # attaching the generated thoughts to the original answers        
             new_batch, thought_starts = tokenize_batch(batch, thoughts, tokenizer, device)
             # next token prediction to optimize the current policy for longer generation (E step)
@@ -279,11 +280,11 @@ def train(args):
                     loss_detached = outputs.loss.detach().float()
                     dist.all_reduce(loss_detached, op=dist.ReduceOp.SUM)
                     loss_avg = (loss_detached / dist.get_world_size()).item()
-                    z_loss_detached = z_output.loss.detach().float()
+                    z_loss_detached = z_loss.detach().float()
                     dist.all_reduce(z_loss_detached, op=dist.ReduceOp.SUM)
                     z_loss_avg = (z_loss_detached / dist.get_world_size()).item()
                     lr = scheduler.get_last_lr()[0]
-                    wandb.log({"train/loss": loss_avg, "train/lr": lr, "step": global_step, "train/z_loss": z_loss_avg})
+                    wandb.log({"train/loss": loss_avg, "train/lr": lr, "step": global_step, "train/z_loss": z_loss_avg, "z": thoughts})
                     
 
             running_loss += outputs.loss.detach().float().item()
