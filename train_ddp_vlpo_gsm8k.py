@@ -223,8 +223,8 @@ def train(args):
                     attention_mask = attention_mask,
                     max_new_tokens=args.max_len,
                     do_sample=True,
-                    temperature=args.temperature,
-                    top_p=args.top_p,
+                    temperature=0.7,
+                    top_p=0.9,
                     eos_token_id=tokenizer.eos_token_id,
                     pad_token_id=tokenizer.pad_token_id,
                 )
