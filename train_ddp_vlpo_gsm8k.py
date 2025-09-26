@@ -249,7 +249,7 @@ def train(args):
 
             # compute log
             z_output = z_model(gen, attention_mask = z_attention_mask)
-            with torch.no_grad:
+            with torch.no_grad():
                 thought_end = thought_start + thought_toks_len
                 thought_logits = outputs.logits[:, thought_start:thought_end]
                 p_logprob = torch.gather(thought_logits.softmax(-1), dim = -1, index = thought_toks.unsqueeze(-1)).log()
