@@ -221,7 +221,7 @@ def train(args):
                 gen = z_model.module.generate(
                     input_ids = input_ids,
                     attention_mask = attention_mask,
-                    max_new_tokens=args.max_gen_len,
+                    max_new_tokens=args.max_len,
                     do_sample=True,
                     temperature=args.temperature,
                     top_p=args.top_p,
