@@ -47,7 +47,7 @@ def seed_everything(seed: int):
 # Data / Formatting
 # ----------------------------
 
-def format_example(ex):
+def format_example(ex, tokenizer):
     prefix = tokenizer.apply_chat_template(
         [{"role": "user", "content": ex["question"]},
         {"role": "assistant", "content": ex["answer"]},
@@ -90,7 +90,7 @@ class Collator:
 
         return toks
 
-def tokenize_batch(tokenizer, batch):
+def tokenize_batch(batch, tokenizer):
     prefix = [tokenizer.apply_chat_template(
         [{"role": "user", "content": q}],
         tokenize=False,
@@ -235,7 +235,7 @@ def train(args):
             batch["answer"] = [thoughts + "\n\n" + a for a in zip(thoughts, batch["answer"])]
             
             
-            new_batch = tokenize_batch(batch)
+            new_batch = tokenize_batch(batch, tokenizer)
 
             # next token prediction to optimize the current policy for longer generation (E step)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
