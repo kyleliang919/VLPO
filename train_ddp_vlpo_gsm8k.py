@@ -85,8 +85,8 @@ class Collator:
             return_tensors="pt",
             add_special_tokens=True,
         )
-        toks["question"] = b["question"]
-        toks["answer"] = b["answer"]
+        toks["question"] = batch["question"]
+        toks["answer"] = batch["answer"]
 
         return toks
 
