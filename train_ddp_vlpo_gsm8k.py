@@ -223,7 +223,7 @@ def train(args):
                 thought_start = input_ids.shape[1]
                 thought_toks = gen[:, thought_start:]
                 thought_toks_len = thought_toks.shape[-1]
-            thoughts = tokenizer.batch_decode(thought_toks)
+            thoughts = tokenizer.batch_decode(thought_toks, skip_special_tokens=True)
             print(thoughts)
             # attaching the generated thoughts to the original answers        
             new_batch, thought_starts = tokenize_batch(batch, thoughts, tokenizer, device)
