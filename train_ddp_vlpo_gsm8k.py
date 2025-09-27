@@ -159,14 +159,8 @@ def train(args):
         device_map=None,
     ).to(device)
 
-    z_model = AutoModelForCausalLM.from_pretrained(
-        args.latent_model_id,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
-        device_map=None,
-    ).to(device)
 
     model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
-    z_model = DDP(z_model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     # Load GSM8K (train only). Use a tiny streaming or full load depending on memory.
     ds = load_dataset("gsm8k", "main", split="train")  # 7473 examples
@@ -194,18 +188,9 @@ def train(args):
     ]
     optimizer = torch.optim.AdamW(grouped, lr=args.lr, betas=(0.9, 0.95), eps=1e-8)
 
-    grouped = [
-        {"params": [p for n, p in z_model.named_parameters() if p.requires_grad and not any(nd in n for nd in no_decay)],
-         "weight_decay": args.weight_decay},
-        {"params": [p for n, p in z_model.named_parameters() if p.requires_grad and any(nd in n for nd in no_decay)],
-         "weight_decay": 0.0},
-    ]
-    z_optimizer = torch.optim.AdamW(grouped, lr=args.lr, betas=(0.9, 0.95), eps=1e-8)
-
     total_steps = (len(dl) * args.epochs) // max(1, args.grad_accum)
     warmup_steps = int(total_steps * args.warmup_ratio)
     scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
-    z_scheduler = get_linear_schedule_with_warmup(z_optimizer, warmup_steps, total_steps)
 
     scaler = torch.cuda.amp.GradScaler(enabled=not torch.cuda.is_bf16_supported())
     z_scaler = torch.cuda.amp.GradScaler(enabled=not torch.cuda.is_bf16_supported())
@@ -222,7 +207,7 @@ def train(args):
             input_ids = batch.input_ids.to(device)
             attention_mask = batch.attention_mask.to(device)
             with torch.no_grad():
-                gen = z_model.module.generate(
+                gen = model.module.generate(
                     input_ids = input_ids,
                     attention_mask = attention_mask,
                     max_new_tokens=args.max_len,
@@ -245,11 +230,11 @@ def train(args):
                 outputs = model(**new_batch)
                 loss = outputs.loss / args.grad_accum
 
-            scaler.scale(loss).backward()
+            
 
 
             # compute log
-            z_output = z_model(gen, attention_mask = z_attention_mask)
+            z_output = model(gen, attention_mask = z_attention_mask)
             with torch.no_grad():
                 thought_logits_idx = torch.arange(thought_toks_len, device = device).unsqueeze(0) + thought_starts.to(device)
                 thought_logits = torch.gather(outputs.logits.detach(), dim = 1, index = thought_logits_idx.unsqueeze(-1).expand(-1, -1, outputs.logits.shape[-1]))
@@ -257,21 +242,16 @@ def train(args):
                 
             q_prob = torch.gather(z_output.logits.softmax(-1)[:,thought_start:], dim =-1, index = gen[:,thought_start:].unsqueeze(-1))
             q_logprob = q_prob.log()
-            z_loss = (q_prob * (q_logprob - p_logprob) * z_attention_mask[:,thought_start:]).sum() # maximize policy gradient is equal to minize this one
-            z_scaler.scale(z_loss).backward()
+            z_loss = (q_prob/q_prob.detach() * (q_logprob - p_logprob) * z_attention_mask[:,thought_start:]).sum() # maximize policy gradient is equal to minize this one
+            total_loss = loss + z_loss
+            scaler.scale(total_loss).backward()
             
             if (step + 1) % args.grad_accum == 0:
                 scaler.unscale_
                 scaler.step(optimizer)
                 scaler.update()
-                z_scaler.unscale_
-                z_scaler.step(z_optimizer)
-                z_scaler.update()
-
                 optimizer.zero_grad(set_to_none=True)
-                z_optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
-                z_scheduler.step()
                 global_step += 1
 
                 # Logging (main process only)
@@ -310,8 +290,6 @@ def train(args):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model_id", type=str, default="Qwen/Qwen3-0.6B",
-                   help="Replace with your favorite huggingface model")
-    p.add_argument("--latent_model_id", type=str, default="Qwen/Qwen3-0.6B",
                    help="Replace with your favorite huggingface model")
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--batch_size", type=int, default=4)
