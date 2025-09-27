@@ -110,7 +110,7 @@ def train(args):
     seed_everything(args.seed)
 
     if is_main_process():
-        wandb.init(project=os.getenv("WANDB_PROJECT", "ddp-sft"), config=vars(args))
+        wandb.init(project=os.getenv("WANDB_PROJECT", "vlpo"), config=vars(args))
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, use_fast=True)
     if tokenizer.pad_token is None:

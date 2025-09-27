@@ -245,7 +245,7 @@ def train(args):
     seed_all(args.seed)
 
     if is_main():
-        wandb.init(project=os.getenv("WANDB_PROJECT", "ddp-grpo"), config=vars(args))
+        wandb.init(project=os.getenv("WANDB_PROJECT", "vlpo"), config=vars(args))
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, use_fast=True)
     if tokenizer.pad_token is None:
