@@ -199,6 +199,8 @@ def train(args):
     # ----------------------------
     global_step = 0
     model.train()
+
+    text_table = wandb.Table(columns=["step", "thoughts"])
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)
         running_loss = 0.0
@@ -264,6 +266,7 @@ def train(args):
                     dist.all_reduce(z_loss_detached, op=dist.ReduceOp.SUM)
                     z_loss_avg = (z_loss_detached / dist.get_world_size()).item()
                     lr = scheduler.get_last_lr()[0]
+                    text_table.add_data(step, thoughts)
                     wandb.log({"train/loss": loss_avg, "train/lr": lr, "step": global_step, "train/z_loss": z_loss_avg, "z": thoughts})
                     
 
